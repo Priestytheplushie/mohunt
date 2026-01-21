@@ -215,8 +215,5 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Database 
-moco_v2.db
-
 # Cleanup
 clean_project.py
