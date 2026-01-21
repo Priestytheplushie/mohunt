@@ -11,7 +11,7 @@ app = Flask("")
 
 @app.route("/")
 def home():
-    return "I am alive! Mo.co Bot is running."
+    return "I am alive! Mo.hunt Bot is running."
 
 
 def run():

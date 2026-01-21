@@ -282,7 +282,6 @@ class Admin(commands.Cog):
         except:
             pass
 
-                                                
         with database.get_connection() as conn:
             rows = conn.execute(
                 """
@@ -293,13 +292,11 @@ class Admin(commands.Cog):
             """
             ).fetchall()
 
-                                                          
         options = []
         for row in rows:
             uid = row["user_id"]
             db_name = row["display_name"]
 
-                                                      
             if not db_name:
                 user = self.bot.get_user(uid)
                 name = user.display_name if user else f"Hunter {uid}"
@@ -424,7 +421,7 @@ class HunterUserSelect(UserSelect):
                 "⛔ Access Denied.", ephemeral=True
             )
         target_user = self.values[0]
-                                                                      
+
         database.register_user(target_user.id, target_user.display_name)
         await handle_admin_selection(self.bot, interaction, target_user.id)
 
@@ -498,25 +495,24 @@ class GuildIDModal(Modal):
 
 
 async def handle_admin_selection(bot, interaction: discord.Interaction, target_id: int):
-                                       
+
     target_user = bot.get_user(target_id)
 
-                                                                         
     name = f"Unknown ({target_id})"
 
     if target_user:
         name = target_user.name
     else:
-                            
+
         u_data = database.get_user_data(target_id)
         if u_data and u_data["display_name"]:
             name = u_data["display_name"]
         else:
-                                       
+
             try:
                 target_user = await bot.fetch_user(target_id)
                 name = target_user.name
-                                
+
                 database.register_user(target_id, name)
             except:
                 pass
@@ -812,7 +808,7 @@ class GuildBlacklistModal(Modal):
                 "internal": self.staff_reason.value,
             },
         )
-                      
+
         i.client.guild_blacklist_cache[self.guild_id] = {
             "guild_id": self.guild_id,
             "public_reason": self.pub_reason.value,
@@ -2125,7 +2121,7 @@ class GlobalActionSelect(Select):
             current = database.get_config("maintenance_mode", "0")
             new_val = "1" if current == "0" else "0"
             database.set_config("maintenance_mode", new_val)
-                                                    
+
             self.view.bot.update_cache("maintenance_mode", new_val)
 
             await i.response.send_message(
@@ -2175,7 +2171,7 @@ class ModerationActionSelect(Select):
             await i.response.send_message("✅ Dailies force-reset.", ephemeral=True)
         elif val == "unban":
             database.unblacklist_user(self.target_id)
-                                      
+
             if self.target_id in self.view.bot.blacklist_cache:
                 del self.view.bot.blacklist_cache[self.target_id]
 
@@ -2331,7 +2327,6 @@ class UserBlacklistReasonModal(Modal):
             {"expiry": self.expiry, "reason": self.reason.value},
         )
 
-                                      
         i.client.blacklist_cache[self.target_id] = {
             "user_id": self.target_id,
             "reason": self.reason.value,

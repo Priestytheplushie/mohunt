@@ -18,7 +18,6 @@ class Loadout(commands.Cog):
         active_kit = database.get_active_kit(user_id)
         total_gp = utils.get_total_gp(user_id)
 
-                                                          
         if not active_kit:
             return discord.Embed(
                 title="Error",
@@ -139,7 +138,7 @@ class Loadout(commands.Cog):
 
     @app_commands.command(name="kit", description="View loadout")
     async def view_kit(self, interaction: discord.Interaction):
-                                                          
+
         database.register_user(interaction.user.id, interaction.user.display_name)
         database.ensure_user_has_kit(interaction.user.id)
 
@@ -181,7 +180,6 @@ class KitSelector(discord.ui.Select):
         for kit in kits:
             idx = kit["slot_index"]
 
-                                                                  
             if idx in seen_indices:
                 continue
             seen_indices.add(idx)
@@ -232,7 +230,6 @@ class KitSelector(discord.ui.Select):
                 )
             )
 
-                                                        
         if not options:
             options.append(discord.SelectOption(label="Error: No Kits", value="error"))
 

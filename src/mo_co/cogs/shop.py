@@ -545,10 +545,28 @@ class ShopView(View):
 
         if self.tab == "deals":
             deals = database.get_active_deals()
-            for idx, d in enumerate(deals):
+
+            # Filter and track buttons to prevent overflow
+            visible_deals = []
+            for d in deals:
                 if self.is_visible_deal(d):
-                    self.add_item(BuyDealButton(idx, d))
+                    visible_deals.append(d)
+
+            button_count = 0
+            for idx, d in enumerate(
+                deals
+            ):  # Use original index for consistency with embed
+                if self.is_visible_deal(d):
+                    # Calculate row: starting at row 2, each row holds 5 items.
+                    target_row = 2 + (button_count // 5)
+                    if (
+                        target_row <= 3
+                    ):  # Keep within valid Discord rows (0-4 used for nav/dice)
+                        self.add_item(BuyDealButton(idx, d, row=target_row))
+                        button_count += 1
+
             self.add_item(BuyDiceButton())
+
         elif self.tab == "merch":
             owned_skins = json.loads(self.u_data["owned_skins"])
             owned_titles = json.loads(self.u_data["owned_titles"])
@@ -751,7 +769,7 @@ class ClaimBonusButton(Button):
         owned_skins = json.loads(u["owned_skins"])
         owned_skins.append("water_balloon")
         database.update_user_stats(
-            self.view.user_id, {"owned_skins": json.dumps(owned_skins)}
+            self.view.user.id, {"owned_skins": json.dumps(owned_skins)}
         )
         self.view.u_data = database.get_user_data(self.view.user.id)
         self.view.update_components()
@@ -848,9 +866,9 @@ class BuyChaosButton(Button):
 
 
 class BuyDealButton(Button):
-    def __init__(self, idx, deal):
+    def __init__(self, idx, deal, row=2):
         super().__init__(
-            label=f"Buy #{idx+1}", style=discord.ButtonStyle.success, row=2
+            label=f"Buy #{idx+1}", style=discord.ButtonStyle.success, row=row
         )
         self.deal = deal
 
@@ -973,7 +991,7 @@ class BuyDealButton(Button):
                     msg = f"✅ Acquired **{item['name']}**!"
             elif item["type"] == "consumable_xp":
                 database.update_user_stats(
-                    self.user.id,
+                    self.user_id,
                     {"daily_xp_boosted": u["daily_xp_boosted"] + 10000},
                 )
                 msg = "✅ **XP Booster Activated!**"
