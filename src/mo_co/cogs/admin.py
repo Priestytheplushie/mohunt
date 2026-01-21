@@ -209,7 +209,7 @@ class Admin(commands.Cog):
             )
 
         try:
-            import libsql_experimental as libsql              
+            import libsql_experimental as libsql
         except ImportError:
             return await ctx.send(
                 "❌ `libsql-experimental` not installed. Cannot connect to Turso."
@@ -282,33 +282,30 @@ class Admin(commands.Cog):
         except:
             pass
 
+                                                
         with database.get_connection() as conn:
             rows = conn.execute(
                 """
-                SELECT user_id, xp, is_elite, prestige_level, current_title, last_hunt_time 
+                SELECT user_id, display_name, xp, is_elite, prestige_level, current_title, last_hunt_time 
                 FROM users 
                 ORDER BY last_hunt_time DESC 
                 LIMIT 25
             """
             ).fetchall()
 
-        async def fetch_info(row):
-            uid = row["user_id"]
-            user = self.bot.get_user(uid)
-            if not user:
-                try:
-                    user = await self.bot.fetch_user(uid)
-                except:
-                    user = None
-
-            name = user.display_name if user else f"Hunter {uid}"
-            return {"uid": uid, "name": name, "row": row}
-
-        results = await asyncio.gather(*[fetch_info(r) for r in rows])
-
+                                                          
         options = []
-        for res in results:
-            row = res["row"]
+        for row in rows:
+            uid = row["user_id"]
+            db_name = row["display_name"]
+
+                                                      
+            if not db_name:
+                user = self.bot.get_user(uid)
+                name = user.display_name if user else f"Hunter {uid}"
+            else:
+                name = db_name
+
             lvl, _, _ = utils.get_level_info(row["xp"])
             emblem_str = utils.get_emblem(
                 lvl, bool(row["is_elite"]), row["prestige_level"]
@@ -321,8 +318,8 @@ class Admin(commands.Cog):
 
             options.append(
                 discord.SelectOption(
-                    label=res["name"][:100],
-                    value=str(res["uid"]),
+                    label=name[:100],
+                    value=str(uid),
                     description=f"Lvl {lvl} | {row['current_title'] or 'No Title'}",
                     emoji=emoji,
                 )
@@ -427,6 +424,8 @@ class HunterUserSelect(UserSelect):
                 "⛔ Access Denied.", ephemeral=True
             )
         target_user = self.values[0]
+                                                                      
+        database.register_user(target_user.id, target_user.display_name)
         await handle_admin_selection(self.bot, interaction, target_user.id)
 
 
@@ -499,14 +498,28 @@ class GuildIDModal(Modal):
 
 
 async def handle_admin_selection(bot, interaction: discord.Interaction, target_id: int):
+                                       
     target_user = bot.get_user(target_id)
-    if not target_user:
-        try:
-            target_user = await bot.fetch_user(target_id)
-        except:
-            pass
 
-    name = target_user.name if target_user else f"Unknown ({target_id})"
+                                                                         
+    name = f"Unknown ({target_id})"
+
+    if target_user:
+        name = target_user.name
+    else:
+                            
+        u_data = database.get_user_data(target_id)
+        if u_data and u_data["display_name"]:
+            name = u_data["display_name"]
+        else:
+                                       
+            try:
+                target_user = await bot.fetch_user(target_id)
+                name = target_user.name
+                                
+                database.register_user(target_id, name)
+            except:
+                pass
 
     try:
         if isinstance(interaction.message, discord.Message):
@@ -623,10 +636,9 @@ class UnbanGuildButton(Button):
 
     async def callback(self, i: discord.Interaction):
         database.unblacklist_guild(self.guild_id)
-                                 
         if self.guild_id in self.view.bot.guild_blacklist_cache:
             del self.view.bot.guild_blacklist_cache[self.guild_id]
-            
+
         self.view.update_components()
         await i.response.edit_message(embed=self.view.get_embed(), view=self.view)
         await i.followup.send("✅ Guild unblacklisted.", ephemeral=True)
@@ -800,11 +812,11 @@ class GuildBlacklistModal(Modal):
                 "internal": self.staff_reason.value,
             },
         )
-                                  
+                      
         i.client.guild_blacklist_cache[self.guild_id] = {
             "guild_id": self.guild_id,
             "public_reason": self.pub_reason.value,
-            "staff_reason": self.staff_reason.value
+            "staff_reason": self.staff_reason.value,
         }
 
         self.parent_view.update_components()
@@ -2115,7 +2127,7 @@ class GlobalActionSelect(Select):
             database.set_config("maintenance_mode", new_val)
                                                     
             self.view.bot.update_cache("maintenance_mode", new_val)
-            
+
             await i.response.send_message(
                 f"Maintenance Mode set to: {new_val}", ephemeral=True
             )
@@ -2166,7 +2178,7 @@ class ModerationActionSelect(Select):
                                       
             if self.target_id in self.view.bot.blacklist_cache:
                 del self.view.bot.blacklist_cache[self.target_id]
-                
+
             await i.response.send_message("User unbanned.", ephemeral=True)
             self.view.update_components()
             await i.edit_original_response(embed=self.view.get_embed(), view=self.view)
@@ -2318,14 +2330,14 @@ class UserBlacklistReasonModal(Modal):
             "BAN_USER",
             {"expiry": self.expiry, "reason": self.reason.value},
         )
-        
+
                                       
         i.client.blacklist_cache[self.target_id] = {
             "user_id": self.target_id,
             "reason": self.reason.value,
-            "expires_at": self.expiry
+            "expires_at": self.expiry,
         }
-        
+
         await i.response.send_message(
             f"⛔ **User Blacklisted.**\nExpires: {self.expiry}", ephemeral=True
         )

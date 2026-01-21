@@ -42,13 +42,14 @@ class MoCoBot(commands.Bot):
         database.init_db()
         season_manager.init_season()
 
-                                  
         print("Loading global configuration cache...")
         configs, u_bans, g_bans = database.load_global_cache()
         self.config_cache = configs
         self.blacklist_cache = u_bans
         self.guild_blacklist_cache = g_bans
-        print(f"Cache loaded. Maintenance Mode: {self.config_cache.get('maintenance_mode', '0')}")
+        print(
+            f"Cache loaded. Maintenance Mode: {self.config_cache.get('maintenance_mode', '0')}"
+        )
 
         try:
             emoji_path = "src/mo_co/emoji_map.json"
@@ -110,7 +111,9 @@ class MoCoBot(commands.Bot):
         """Silently update user display name in background to keep leaderboards fresh."""
         try:
             if interaction.user:
-                database.register_user(interaction.user.id, interaction.user.display_name)
+                database.register_user(
+                    interaction.user.id, interaction.user.display_name
+                )
         except:
             pass
 
@@ -118,7 +121,6 @@ class MoCoBot(commands.Bot):
         if interaction.user.id == ADMIN_ID:
             return True
 
-                               
         m_mode = self.config_cache.get("maintenance_mode", "0")
         if m_mode == "1":
             if interaction.type == discord.InteractionType.autocomplete:
@@ -144,7 +146,7 @@ class MoCoBot(commands.Bot):
             u_row = self.blacklist_cache[interaction.user.id]
             expiry = u_row["expires_at"]
             is_banned = False
-            
+
             if expiry == "PERMANENT":
                 is_banned = True
             else:
@@ -152,7 +154,7 @@ class MoCoBot(commands.Bot):
                     if datetime.fromisoformat(expiry) > datetime.utcnow():
                         is_banned = True
                     else:
-                                                            
+
                         del self.blacklist_cache[interaction.user.id]
                 except:
                     pass

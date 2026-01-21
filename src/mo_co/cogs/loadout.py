@@ -18,6 +18,14 @@ class Loadout(commands.Cog):
         active_kit = database.get_active_kit(user_id)
         total_gp = utils.get_total_gp(user_id)
 
+                                                          
+        if not active_kit:
+            return discord.Embed(
+                title="Error",
+                description="No active kit found. Please create a new kit.",
+                color=0xE74C3C,
+            )
+
         kit_name = active_kit["name"]
         embed = discord.Embed(
             title=f"{user_name}'s {kit_name}",
@@ -131,10 +139,13 @@ class Loadout(commands.Cog):
 
     @app_commands.command(name="kit", description="View loadout")
     async def view_kit(self, interaction: discord.Interaction):
-        database.register_user(interaction.user.id)
+                                                          
+        database.register_user(interaction.user.id, interaction.user.display_name)
         database.ensure_user_has_kit(interaction.user.id)
 
-        embed = self.generate_kit_embed(interaction.user.id, interaction.user.name)
+        embed = self.generate_kit_embed(
+            interaction.user.id, interaction.user.display_name
+        )
         view = KitMainView(self.bot, interaction.user.id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
@@ -165,8 +176,16 @@ class KitSelector(discord.ui.Select):
         active_idx = u_data["active_kit_index"]
 
         options = []
+        seen_indices = set()
+
         for kit in kits:
             idx = kit["slot_index"]
+
+                                                                  
+            if idx in seen_indices:
+                continue
+            seen_indices.add(idx)
+
             name = kit["name"]
 
             w_id = kit["weapon_id"]
@@ -213,6 +232,10 @@ class KitSelector(discord.ui.Select):
                 )
             )
 
+                                                        
+        if not options:
+            options.append(discord.SelectOption(label="Error: No Kits", value="error"))
+
         super().__init__(
             placeholder="Select Gear Kit...",
             min_values=1,
@@ -238,6 +261,10 @@ class KitSelector(discord.ui.Select):
             )
             new_view = KitMainView(self.view.bot, self.user_id)
             await interaction.response.edit_message(embed=new_embed, view=new_view)
+        elif val == "error":
+            await interaction.response.send_message(
+                "Kit data error. Please report to admin.", ephemeral=True
+            )
         else:
             idx = int(val.split("_")[1])
             database.update_user_stats(self.user_id, {"active_kit_index": idx})

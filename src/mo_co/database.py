@@ -10,7 +10,7 @@ from collections.abc import Mapping
 
 USE_TURSO = False
 try:
-    import libsql_experimental as libsql              
+    import libsql_experimental as libsql
 
     if config.TURSO_DB_URL and config.TURSO_AUTH_TOKEN:
         USE_TURSO = True
@@ -169,8 +169,6 @@ def init_db():
     )"""
     )
 
-                                                                         
-                                                   
     conn.execute(
         """CREATE TABLE IF NOT EXISTS inventory (
         instance_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -354,7 +352,7 @@ def register_user(user_id, display_name=None):
         ).fetchone()
 
         if row:
-                                    
+
             if display_name and row["display_name"] != display_name:
                 conn.execute(
                     "UPDATE users SET display_name = ? WHERE user_id = ?",
@@ -427,14 +425,13 @@ def get_leaderboard_data(limit=100):
         conn.close()
 
 
-                                                                                  
 def ensure_user_has_kit(user_id):
     with get_connection() as conn:
         kits = conn.execute(
             "SELECT count(*) FROM gear_kits WHERE user_id=?", (user_id,)
         ).fetchone()[0]
         if kits == 0:
-                                           
+
             old_loadout = conn.execute(
                 "SELECT * FROM loadouts WHERE user_id=?", (user_id,)
             ).fetchone()

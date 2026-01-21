@@ -1,7 +1,7 @@
 import sqlite3
 import os
 import sys
-import libsql_experimental as libsql               
+import libsql_experimental as libsql
 from dotenv import load_dotenv
 
 
