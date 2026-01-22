@@ -51,6 +51,8 @@ class Shop(commands.Cog):
 
     @app_commands.command(name="shop", description="Open Manny's mo.co Shop")
     async def shop(self, interaction: discord.Interaction):
+
+        await interaction.response.defer(ephemeral=True)
         database.register_user(interaction.user.id)
 
         if await self.check_new_player_redirect(interaction):
@@ -58,7 +60,7 @@ class Shop(commands.Cog):
 
         self.check_shop_refresh()
         view = ShopView(self.bot, interaction.user)
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=view.get_embed(), view=view, ephemeral=True
         )
 
@@ -216,7 +218,9 @@ class ShopView(View):
         self.user = user
         self.user_id = user.id
         self.tab = "deals"
+
         self.u_data = database.get_user_data(user.id)
+
         self.shop_state = database.get_shop_state()
         self.generate_daily_gear()
         self.update_components()
@@ -347,7 +351,7 @@ class ShopView(View):
             else:
                 embed.description += "*Restocking... Check back soon!*"
 
-            inv = database.get_user_inventory(self.user.id)
+            inv = database.get_user_inventory(self.user_id)
             dice = next((i for i in inv if i["item_id"] == "bunch_of_dice"), None)
             if not dice:
                 embed.add_field(
@@ -546,22 +550,17 @@ class ShopView(View):
         if self.tab == "deals":
             deals = database.get_active_deals()
 
-            # Filter and track buttons to prevent overflow
             visible_deals = []
             for d in deals:
                 if self.is_visible_deal(d):
                     visible_deals.append(d)
 
             button_count = 0
-            for idx, d in enumerate(
-                deals
-            ):  # Use original index for consistency with embed
+            for idx, d in enumerate(deals):
                 if self.is_visible_deal(d):
-                    # Calculate row: starting at row 2, each row holds 5 items.
+
                     target_row = 2 + (button_count // 5)
-                    if (
-                        target_row <= 3
-                    ):  # Keep within valid Discord rows (0-4 used for nav/dice)
+                    if target_row <= 3:
                         self.add_item(BuyDealButton(idx, d, row=target_row))
                         button_count += 1
 

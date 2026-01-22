@@ -16,8 +16,17 @@ class Portal(commands.Cog):
 
     @app_commands.command(name="portal", description="Open the World Portal")
     async def portal(self, interaction: discord.Interaction):
+
+        await interaction.response.defer()
+
         database.register_user(interaction.user.id)
-        u_data = database.get_user_data(interaction.user.id)
+
+        context = database.get_full_user_context(interaction.user.id)
+        u_data = context[0] if context else None
+
+        if not u_data:
+            return await interaction.followup.send("Profile error.", ephemeral=True)
+
         try:
             m_state = json.loads(u_data["mission_state"])
             active_id = m_state.get("active")
@@ -35,20 +44,20 @@ class Portal(commands.Cog):
                     self.bot,
                     interaction.user.id,
                     m_state,
-                    u_data["mission_thread_id"],
                 )
-                await interaction.response.send_message(
-                    embed=embed, view=view, ephemeral=True
-                )
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
                 return
         except:
             pass
 
         utils.check_daily_reset(interaction.user.id)
-        u_dict = dict(u_data)
-        player_lvl, _, _ = utils.get_level_info(u_dict["xp"])
-        view = PortalView(self.bot, interaction.user, player_lvl, mode="worlds")
-        await interaction.response.send_message(
+
+        player_lvl, _, _ = utils.get_level_info(u_data["xp"])
+
+        view = PortalView(
+            self.bot, interaction.user, player_lvl, mode="worlds", context=context
+        )
+        await interaction.followup.send(
             embed=view.get_embed(), view=view, ephemeral=False
         )
 
@@ -194,13 +203,16 @@ class Portal(commands.Cog):
 
 
 class PortalView(View):
-    def __init__(self, bot, user, player_lvl, mode="worlds"):
+    def __init__(self, bot, user, player_lvl, mode="worlds", context=None):
         super().__init__(timeout=180)
         self.bot = bot
         self.user = user
         self.user_id = user.id
         self.player_lvl = player_lvl
         self.mode = mode
+
+        self.context = context
+
         self.update_components()
 
     async def on_timeout(self):
@@ -212,10 +224,19 @@ class PortalView(View):
             pass
 
     def get_embed(self):
-        u_data = database.get_user_data(self.user.id)
-        u_dict = dict(u_data)
+
+        if self.context:
+            u_dict, kit_data, inv_map = self.context
+        else:
+            u_dict = dict(database.get_user_data(self.user_id))
+            kit_data = None
+            inv_map = None
+
         self.player_lvl, _, _ = utils.get_level_info(u_dict["xp"])
-        user_gp = utils.get_total_gp(self.user.id)
+
+        user_gp = utils.get_total_gp(
+            self.user_id, kit_cache=kit_data, inv_cache=inv_map
+        )
 
         embed = discord.Embed(color=0x9B59B6)
         title_str = u_dict.get("current_title") or "Hunter"
@@ -332,7 +353,11 @@ class PortalView(View):
             self.add_item(RankedQueueButton())
             self.add_item(BeltsButton(config.BLACK_BELT))
 
-        u_dict = dict(database.get_user_data(self.user.id))
+        if self.context:
+            u_dict = self.context[0]
+        else:
+            u_dict = dict(database.get_user_data(self.user.id))
+
         fuel = u_dict.get("daily_xp_boosted", 0)
         bank = u_dict.get("daily_xp_total", 0)
 

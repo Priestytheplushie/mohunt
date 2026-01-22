@@ -49,21 +49,18 @@ class Inventory(commands.Cog):
 
     @app_commands.command(name="inventory", description="Advanced Gear Management")
     async def inventory(self, interaction: discord.Interaction):
+
+        await interaction.response.defer(ephemeral=True)
         database.register_user(interaction.user.id)
-        view = AdvancedInventoryView(self.bot, interaction.user.id)
-        await interaction.response.send_message(
+
+        context = database.get_full_user_context(interaction.user.id)
+
+        view = AdvancedInventoryView(self.bot, interaction.user.id, context)
+        await interaction.followup.send(
             embed=view.get_embed(), view=view, ephemeral=True
         )
 
     @app_commands.command(name="inspect", description="View detailed info")
-    @app_commands.describe(
-        item_name="Name to inspect",
-        level="Preview Level (Default: Your Level)",
-        modifier="Preview Modifier",
-    )
-    @app_commands.autocomplete(
-        item_name=utils.item_autocomplete, modifier=utils.modifier_autocomplete
-    )
     async def inspect(
         self,
         interaction: discord.Interaction,
@@ -170,7 +167,10 @@ class Inventory(commands.Cog):
         name="open", description="3D Printer: Open Cores and Use Kits"
     )
     async def open_cmd(self, interaction: discord.Interaction):
+
+        await interaction.response.defer(ephemeral=True)
         database.register_user(interaction.user.id)
+
         view = OpenDashboard(self.bot, interaction.user.id)
         embed = discord.Embed(
             title="🖨️ 3D Printer",
@@ -187,7 +187,7 @@ class Inventory(commands.Cog):
             value=f"{config.CHAOS_CORE_EMOJI} **{view.kits}**\n*Use to upgrade gear!*",
             inline=True,
         )
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     async def prompt_kit_usage(self, interaction: discord.Interaction):
         user_id = interaction.user.id
@@ -271,7 +271,7 @@ class Inventory(commands.Cog):
 
 
 class AdvancedInventoryView(View):
-    def __init__(self, bot, user_id):
+    def __init__(self, bot, user_id, context=None):
         super().__init__(timeout=300)
         self.bot = bot
         self.user_id = user_id
@@ -282,11 +282,37 @@ class AdvancedInventoryView(View):
         self.show_advanced = False
         self.items_per_page = 5
         self.filtered_items = []
+
+        if context:
+            self.u_data = context[0]
+            self.kit_data = context[1]
+            self.inv_map = context[2]
+            self.raw_inv = list(self.inv_map.values())
+        else:
+            self.u_data = database.get_user_data(user_id)
+            self.raw_inv = database.get_user_inventory(user_id)
+
+            self.kit_data = database.get_active_kit(user_id) or {}
+
+        self.skin_map = {}
+        if self.kit_data:
+
+            def map_skin(slot_name):
+                inst_id = self.kit_data.get(f"{slot_name}_id")
+                skin_id = self.kit_data.get(f"{slot_name}_skin")
+                if inst_id and skin_id:
+                    self.skin_map[inst_id] = skin_id
+
+            map_skin("weapon")
+            map_skin("ride")
+            for i in range(1, 4):
+                map_skin(f"gadget_{i}")
+
         self.refresh_data()
         self.update_components()
 
     def refresh_data(self):
-        raw_inv = database.get_user_inventory(self.user_id)
+
         selected_types = [
             x.split("_", 1)[1] for x in self.selected_filters if x.startswith("type_")
         ]
@@ -294,7 +320,7 @@ class AdvancedInventoryView(View):
             x.split("_", 1)[1] for x in self.selected_filters if x.startswith("mod_")
         ]
         processed = []
-        for row in raw_inv:
+        for row in self.raw_inv:
             d = game_data.get_item(row["item_id"])
             if not d:
                 continue
@@ -342,9 +368,12 @@ class AdvancedInventoryView(View):
             self.page = 0
 
     def get_embed(self):
-        u_data = database.get_user_data(self.user_id)
-        u_dict = dict(u_data)
-        total_gp = utils.get_total_gp(self.user_id)
+
+        total_gp = sum(
+            utils.get_item_gp(i["item_id"], i["level"]) for i in self.raw_inv
+        )
+
+        u_dict = dict(self.u_data)
         level, _, _ = utils.get_level_info(u_dict["xp"])
         emblem = utils.get_emblem(level)
         embed = discord.Embed(
@@ -363,7 +392,12 @@ class AdvancedInventoryView(View):
             embed.description = "*No items found matching criteria.*"
         else:
             for item in chunk:
-                icon = utils.get_emoji(self.bot, item["id"], self.user_id)
+
+                skin_id = self.skin_map.get(item["inst"])
+
+                display_id = skin_id if skin_id else item["id"]
+                icon = utils.get_emoji(self.bot, display_id)
+
                 mod_str = f"**[{item['mod']}]** " if item["mod"] != "Standard" else ""
                 lock_icon = "🔒 " if item["locked"] else ""
 
@@ -372,7 +406,6 @@ class AdvancedInventoryView(View):
                 else:
                     stats_str = f"`Lvl {item['lvl']}` | {config.GEAR_POWER_EMOJI} `{item['gp']:,}` | *{item['rarity']}*"
 
-                skin_id = utils.get_equipped_skin(self.user_id, item["id"])
                 if skin_id:
                     stats_str += f"\n🎨 **{game_data.get_item(skin_id)['name']}**"
 
@@ -968,7 +1001,10 @@ class FusionConfirmView(View):
             ),
             view=None,
         )
-        await asyncio.sleep(2)
+
+        asyncio.create_task(self.process_fusion(interaction.channel))
+
+    async def process_fusion(self, channel):
 
         for item in self.items:
             if item["type"] == "gear":
@@ -1002,16 +1038,11 @@ class FusionConfirmView(View):
         if rewards["tokens"]:
             res.append(f"{config.MERCH_TOKEN_EMOJI} **{rewards['tokens']}** Tokens")
 
-        embed_pub.description = (
-            f"**{interaction.user.name}** sacrificed {len(self.items)} items for {self.rolls} rolls.\n\n"
-            + ("\n".join(res) if res else "*The Chaos yielded nothing.*")
+        embed_pub.description = f"**{self.items[0]['type'].title()} Sacrificed!**\n" + (
+            "\n".join(res) if res else "*The Chaos yielded nothing.*"
         )
 
-        await interaction.channel.send(embed=embed_pub)
-        try:
-            await interaction.delete_original_response()
-        except:
-            pass
+        await channel.send(f"<@{self.user_id}>", embed=embed_pub)
 
 
 class InspectModeButton(Button):

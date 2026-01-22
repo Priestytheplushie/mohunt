@@ -12,11 +12,9 @@ class Loadout(commands.Cog):
 
     def generate_kit_embed(self, user_id, user_name):
         database.register_user(user_id)
-
         database.ensure_user_has_kit(user_id)
 
-        active_kit = database.get_active_kit(user_id)
-        total_gp = utils.get_total_gp(user_id)
+        user_data, active_kit, inv_map = database.get_full_user_context(user_id)
 
         if not active_kit:
             return discord.Embed(
@@ -24,6 +22,8 @@ class Loadout(commands.Cog):
                 description="No active kit found. Please create a new kit.",
                 color=0xE74C3C,
             )
+
+        total_gp = utils.get_total_gp(user_id, kit_cache=active_kit, inv_cache=inv_map)
 
         kit_name = active_kit["name"]
         embed = discord.Embed(
@@ -41,7 +41,7 @@ class Loadout(commands.Cog):
                 )
                 return f"{emoji} *{label_fallback}*"
 
-            item = database.get_item_instance(inst_id)
+            item = inv_map.get(inst_id)
             if not item:
                 return "Unknown"
 
@@ -139,6 +139,8 @@ class Loadout(commands.Cog):
     @app_commands.command(name="kit", description="View loadout")
     async def view_kit(self, interaction: discord.Interaction):
 
+        await interaction.response.defer(ephemeral=True)
+
         database.register_user(interaction.user.id, interaction.user.display_name)
         database.ensure_user_has_kit(interaction.user.id)
 
@@ -146,7 +148,7 @@ class Loadout(commands.Cog):
             interaction.user.id, interaction.user.display_name
         )
         view = KitMainView(self.bot, interaction.user.id)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 class KitMainView(discord.ui.View):

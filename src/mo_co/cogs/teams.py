@@ -128,6 +128,7 @@ class Teams(commands.Cog):
         activity: str = None,
         message: str = "Join my Team!",
     ):
+        await interaction.response.defer(ephemeral=True)
         database.register_user(interaction.user.id)
         initial_rift = activity if activity in game_data.RIFTS else "No Location"
 
@@ -136,13 +137,14 @@ class Teams(commands.Cog):
                 interaction.user.id, initial_rift
             )
             if not success:
-                return await interaction.response.send_message(
-                    f"❌ {reason}", ephemeral=True
-                )
+                return await interaction.followup.send(f"❌ {reason}", ephemeral=True)
 
-        u_data = database.get_user_data(interaction.user.id)
-        lvl, _, _ = utils.get_level_info(u_data["xp"])
-        gp = utils.get_total_gp(interaction.user.id)
+        context = utils.get_user_combat_profile(interaction.user.id)
+        if not context:
+            return await interaction.followup.send("Profile error.", ephemeral=True)
+
+        lvl = context["level"]
+        gp = context["gp"]
 
         member_data = {
             interaction.user.id: {
@@ -162,8 +164,12 @@ class Teams(commands.Cog):
         )
         view = LFGView(self.bot, interaction.user.id)
 
-        await interaction.response.send_message(embed=embed, view=view)
-        lfg_msg = await interaction.original_response()
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+        public_embed = embed.copy()
+        public_view = LFGView(self.bot, interaction.user.id)
+
+        lfg_msg = await interaction.channel.send(embed=public_embed, view=public_view)
 
         try:
             thread = await interaction.channel.create_thread(
@@ -213,7 +219,10 @@ class Teams(commands.Cog):
             description=f"**{message}**",
             color=0x2ECC71,
         )
-        embed.set_author(name=f"{leader_name}'s Team", icon_url=leader_avatar)
+        if leader_avatar:
+            embed.set_author(name=f"{leader_name}'s Team", icon_url=leader_avatar)
+        else:
+            embed.set_author(name=f"{leader_name}'s Team")
 
         member_lines = []
         total_gp = 0
@@ -245,12 +254,16 @@ class Teams(commands.Cog):
     def check_user_requirements(self, user_id, rift_key):
         if rift_key not in game_data.RIFTS:
             return True, None
-        r_def = game_data.RIFTS[rift_key]
-        u_data = database.get_user_data(user_id)
-        if not u_data:
+
+        context = utils.get_user_combat_profile(user_id)
+        if not context:
             return False, "User not registered"
-        player_lvl, _, _ = utils.get_level_info(u_data["xp"])
+
+        player_lvl = context["level"]
+        u_data = context["user_data"]
+
         required_lvl = 1
+        r_def = game_data.RIFTS[rift_key]
         for s in game_data.RIFT_SETS:
             if rift_key in s["rifts"]:
                 required_lvl = s["unlock_lvl"]
@@ -260,7 +273,7 @@ class Teams(commands.Cog):
         req = r_def.get("req_rift")
         if req:
             try:
-                completed = json.loads(u_data["completed_rifts"])
+                completed = json.loads(u_data.get("completed_rifts", "[]"))
             except:
                 completed = []
             if req not in completed:
@@ -305,16 +318,16 @@ class LFGView(View):
                     f"❌ **Requirement not met:** {reason}", ephemeral=True
                 )
         database.register_user(interaction.user.id)
-        u_data = database.get_user_data(interaction.user.id)
-        lvl, _, _ = utils.get_level_info(u_data["xp"])
-        gp = utils.get_total_gp(interaction.user.id)
+
+        context = utils.get_user_combat_profile(interaction.user.id)
+
         lobby["members"].append(interaction.user.id)
         lobby["ready"][interaction.user.id] = False
         lobby["member_info"][interaction.user.id] = {
             "name": interaction.user.display_name,
-            "lvl": lvl,
-            "gp": gp,
-            "emblem": utils.get_emblem(lvl),
+            "lvl": context["level"],
+            "gp": context["gp"],
+            "emblem": utils.get_emblem(context["level"]),
         }
         thread = interaction.guild.get_thread(thread_id)
         if thread:

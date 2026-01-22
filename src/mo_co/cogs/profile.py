@@ -17,10 +17,11 @@ class Profile(commands.Cog):
         self.bot.tree.add_command(self.ctx_menu)
 
     async def _generate_profile_embed(self, target: discord.User):
-        row = database.get_user_data(target.id)
-        if not row:
+
+        user_data, kit_data, inv_map = database.get_full_user_context(target.id)
+
+        if not user_data:
             return None
-        user_data = dict(row)
 
         is_masked = False
         if user_data.get("account_state") != "LEGIT":
@@ -40,8 +41,8 @@ class Profile(commands.Cog):
                 user_data["elite_xp"]
             )
 
-        hp = utils.get_max_hp(target.id, level)
-        gp = utils.get_total_gp(target.id)
+        hp = utils.get_max_hp(target.id, level, kit_cache=kit_data, inv_cache=inv_map)
+        gp = utils.get_total_gp(target.id, kit_cache=kit_data, inv_cache=inv_map)
 
         if is_masked:
             gp_str = "???"
@@ -147,54 +148,44 @@ class Profile(commands.Cog):
                 inline=False,
             )
         else:
-            with database.get_connection() as conn:
-                u = conn.execute(
-                    "SELECT active_kit_index FROM users WHERE user_id=?", (target.id,)
-                ).fetchone()
-                idx = u["active_kit_index"] if u else 1
-                kit = conn.execute(
-                    "SELECT * FROM gear_kits WHERE user_id=? AND slot_index=?",
-                    (target.id, idx),
-                ).fetchone()
 
             def get_item_display(inst_id, empty_key):
                 if not inst_id:
                     return utils.get_emoji(self.bot, empty_key)
-                with database.get_connection() as conn:
-                    row = conn.execute(
-                        "SELECT item_id, level FROM inventory WHERE instance_id=?",
-                        (inst_id,),
-                    ).fetchone()
+
+                row = inv_map.get(inst_id)
                 if row:
                     return f"{utils.get_emoji(self.bot, row['item_id'], target.id)} Lvl {row['level']}"
                 return utils.get_emoji(self.bot, empty_key)
 
-            if kit:
+            if kit_data:
                 gadget_list = [
-                    get_item_display(kit[f"gadget_{i}_id"], "empty_gadget")
+                    get_item_display(kit_data.get(f"gadget_{i}_id"), "empty_gadget")
                     for i in range(1, 4)
                 ]
                 gadgets = " | ".join(gadget_list)
+
                 passive_list = [
-                    get_item_display(kit[f"passive_{i}_id"], "empty_passive")
+                    get_item_display(kit_data.get(f"passive_{i}_id"), "empty_passive")
                     for i in range(1, 4)
                 ]
                 passives = " | ".join(passive_list)
+
                 ring_list = [
-                    get_item_display(kit[f"ring_{i}_id"], "empty_ring")
+                    get_item_display(kit_data.get(f"ring_{i}_id"), "empty_ring")
                     for i in range(1, 4)
                 ]
                 rings = " | ".join(ring_list)
 
                 kit_desc = (
-                    f"**Weapon:** {get_item_display(kit['weapon_id'], 'empty_weapon')}\n"
+                    f"**Weapon:** {get_item_display(kit_data.get('weapon_id'), 'empty_weapon')}\n"
                     f"**Gadgets:** {gadgets}\n"
                     f"**Passives:** {passives}\n"
-                    f"**Module:** {get_item_display(kit['elite_module_id'], 'empty_module')}\n"
+                    f"**Module:** {get_item_display(kit_data.get('elite_module_id'), 'empty_module')}\n"
                     f"**Rings:** {rings}"
                 )
                 embed.add_field(
-                    name=f"Active Kit: {kit['name']}", value=kit_desc, inline=False
+                    name=f"Active Kit: {kit_data['name']}", value=kit_desc, inline=False
                 )
 
         return embed

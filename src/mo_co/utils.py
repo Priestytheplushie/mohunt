@@ -149,60 +149,87 @@ def get_elite_level_info(elite_xp):
     return config.ELITE_LEVEL_MAP[-1][0], 0, 0
 
 
-def get_active_passives(user_id):
-    conn = database.get_connection()
-    u = conn.execute(
-        "SELECT active_kit_index FROM users WHERE user_id=?", (user_id,)
-    ).fetchone()
-    idx = u["active_kit_index"] if u else 1
-    kit = conn.execute(
-        "SELECT * FROM gear_kits WHERE user_id=? AND slot_index=?",
-        (user_id, idx),
-    ).fetchone()
+def get_active_passives(user_id, kit_cache=None, inv_cache=None):
+    """
+    Optimized to use pre-fetched data if available.
+    """
     effects = {}
-    if not kit:
+    if kit_cache:
+
+        slots = [
+            "weapon_id",
+            "gadget_1_id",
+            "gadget_2_id",
+            "gadget_3_id",
+            "passive_1_id",
+            "passive_2_id",
+            "passive_3_id",
+            "elite_module_id",
+            "ring_1_id",
+            "ring_2_id",
+            "ring_3_id",
+        ]
+        for s in slots:
+            inst_id = kit_cache.get(s)
+            if inst_id and inv_cache and inst_id in inv_cache:
+                item = inv_cache[inst_id]
+                effects[item["item_id"]] = item["level"]
+
+        pass
+    else:
+        conn = database.get_connection()
+        u = conn.execute(
+            "SELECT active_kit_index FROM users WHERE user_id=?", (user_id,)
+        ).fetchone()
+        idx = u["active_kit_index"] if u else 1
+        kit = conn.execute(
+            "SELECT * FROM gear_kits WHERE user_id=? AND slot_index=?",
+            (user_id, idx),
+        ).fetchone()
+
+        if kit:
+            slots = [
+                "weapon_id",
+                "gadget_1_id",
+                "gadget_2_id",
+                "gadget_3_id",
+                "passive_1_id",
+                "passive_2_id",
+                "passive_3_id",
+                "elite_module_id",
+                "ring_1_id",
+                "ring_2_id",
+                "ring_3_id",
+            ]
+            for s in slots:
+                inst_id = kit[s]
+                if inst_id:
+                    row = conn.execute(
+                        "SELECT item_id, level FROM inventory WHERE instance_id=?",
+                        (inst_id,),
+                    ).fetchone()
+                    if row:
+                        effects[row["item_id"]] = row["level"]
+
+        dice = conn.execute(
+            "SELECT level FROM inventory WHERE user_id=? AND item_id='bunch_of_dice'",
+            (user_id,),
+        ).fetchone()
+        if dice:
+            effects["bunch_of_dice"] = dice[0]
         conn.close()
-        return effects
-    slots = [
-        "weapon_id",
-        "gadget_1_id",
-        "gadget_2_id",
-        "gadget_3_id",
-        "passive_1_id",
-        "passive_2_id",
-        "passive_3_id",
-        "elite_module_id",
-        "ring_1_id",
-        "ring_2_id",
-        "ring_3_id",
-    ]
-    for s in slots:
-        inst_id = kit[s]
-        if inst_id:
-            row = conn.execute(
-                "SELECT item_id, level FROM inventory WHERE instance_id=?",
-                (inst_id,),
-            ).fetchone()
-            if row:
-                effects[row["item_id"]] = row["level"]
-    dice = conn.execute(
-        "SELECT level FROM inventory WHERE user_id=? AND item_id='bunch_of_dice'",
-        (user_id,),
-    ).fetchone()
-    if dice:
-        effects["bunch_of_dice"] = dice[0]
-    conn.close()
+
     return effects
 
 
-def get_max_hp(user_id, level=None):
+def get_max_hp(user_id, level=None, kit_cache=None, inv_cache=None):
     if level is None:
         u = database.get_user_data(user_id)
         if not u:
             return 1600
         level, _, _ = get_level_info(u["xp"])
     base_hp = get_base_hp(level)
-    passives = get_active_passives(user_id)
+    passives = get_active_passives(user_id, kit_cache, inv_cache)
     if "healthy_snacks" in passives:
         item_lvl = passives["healthy_snacks"]
         mult = 0.02 + (item_lvl * 0.005)
@@ -301,7 +328,32 @@ def get_item_gp(item_id, level):
     return level * 10
 
 
-def get_total_gp(user_id):
+def get_total_gp(user_id, kit_cache=None, inv_cache=None):
+    """
+    Optimized to use pre-fetched data if available.
+    """
+    if kit_cache and inv_cache is not None:
+        slots = [
+            "weapon_id",
+            "gadget_1_id",
+            "gadget_2_id",
+            "gadget_3_id",
+            "passive_1_id",
+            "passive_2_id",
+            "passive_3_id",
+            "elite_module_id",
+            "ring_1_id",
+            "ring_2_id",
+            "ring_3_id",
+        ]
+        total_gp = 0
+        for s in slots:
+            inst_id = kit_cache.get(s)
+            if inst_id and inst_id in inv_cache:
+                item = inv_cache[inst_id]
+                total_gp += get_item_gp(item["item_id"], item["level"])
+        return total_gp
+
     conn = database.get_connection()
     u = conn.execute(
         "SELECT active_kit_index FROM users WHERE user_id=?", (user_id,)
@@ -632,3 +684,77 @@ def get_sync_rate(bot, last_action_time):
         return 10.0
 
     return base_rate
+
+
+def get_user_combat_profile(user_id):
+    """
+    Fetches EVERYTHING needed for combat in 2 DB queries total.
+    Returns: A dict with level, hp, gp, kit, and user_data.
+    """
+    user_data, kit_row, inv_map = database.get_full_user_context(user_id)
+    if not user_data:
+        return None
+
+    lvl, _, _ = get_level_info(user_data["xp"])
+
+    kit_data = {
+        "weapon": {"id": "monster_slugger", "modifier": "Standard", "level": lvl},
+        "gadgets": [],
+        "passives": {},
+        "rings": [],
+        "modules": [],
+    }
+
+    total_gp = 0
+
+    if kit_row:
+        slot_map = {}
+        for key in kit_row.keys():
+            if key.endswith("_id") and kit_row[key]:
+                slot_map[kit_row[key]] = key
+
+        for instance_id, item in inv_map.items():
+            slot = slot_map.get(instance_id, "")
+
+            total_gp += get_item_gp(item["item_id"], item["level"])
+
+            if "weapon" in slot:
+                kit_data["weapon"] = {
+                    "id": item["item_id"],
+                    "modifier": item["modifier"],
+                    "level": item["level"],
+                }
+            elif "gadget" in slot:
+                kit_data["gadgets"].append(
+                    {"id": item["item_id"], "lvl": item["level"], "cd": 0}
+                )
+                if item["item_id"] in [
+                    "really_cool_sticker",
+                    "very_mean_pendant",
+                    "bunch_of_dice",
+                    "overcharged_amulet",
+                ]:
+                    kit_data["passives"][item["item_id"]] = item["level"]
+            elif "passive" in slot:
+                kit_data["passives"][item["item_id"]] = item["level"]
+            elif "ring" in slot:
+                kit_data["rings"].append({"id": item["item_id"], "lvl": item["level"]})
+            elif "module" in slot:
+                kit_data["modules"].append(
+                    {"id": item["item_id"], "lvl": item["level"]}
+                )
+
+    base_hp = get_base_hp(lvl)
+    if "healthy_snacks" in kit_data["passives"]:
+        base_hp += 50 + (kit_data["passives"]["healthy_snacks"] * 10)
+
+    return {
+        "level": lvl,
+        "current_hp": user_data["current_hp"],
+        "max_hp": base_hp,
+        "gp": total_gp,
+        "kit": kit_data,
+        "user_data": user_data,
+        "kit_row": kit_row,
+        "inv_map": inv_map,
+    }

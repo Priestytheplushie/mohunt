@@ -368,8 +368,10 @@ class Hunting(commands.Cog):
     @app_commands.command(name="hunt", description="Start a hunting session")
     @app_commands.autocomplete(world_id=world_autocomplete)
     async def hunt(self, interaction: discord.Interaction, world_id: str = None):
+        await interaction.response.defer()
         user_id = interaction.user.id
         database.register_user(user_id)
+
         if await self.check_new_player_redirect(interaction):
             return
 
@@ -377,13 +379,19 @@ class Hunting(commands.Cog):
         if self.bot.get_cog("Jobs"):
             self.bot.get_cog("Jobs").check_refresh(user_id)
 
-        user = database.get_user_data(user_id)
-        player_lvl, _, _ = utils.get_level_info(user["xp"])
-        player_gp = utils.get_total_gp(user_id)
+        context = utils.get_user_combat_profile(user_id)
+        if not context:
+            return await interaction.followup.send(
+                "Profile load error.", ephemeral=True
+            )
+
+        user_dict = context["user_data"]
+        player_lvl = context["level"]
+        player_gp = context["gp"]
 
         if not world_id:
             try:
-                m_state = json.loads(user["mission_state"] or "{}")
+                m_state = json.loads(user_dict["mission_state"] or "{}")
                 actives = m_state.get("active", [])
                 target_world = None
                 for mid in actives:
@@ -413,9 +421,11 @@ class Hunting(commands.Cog):
                 if player_gp >= config.WORLD_RGP.get(w["id"], 15) * 0.8:
                     world_data = w
 
-        max_hp = utils.get_max_hp(user_id, player_lvl)
-        if user["current_hp"] <= 0:
+        max_hp = context["max_hp"]
+        if user_dict["current_hp"] <= 0:
+
             database.update_user_stats(user_id, {"current_hp": max_hp})
+            context["current_hp"] = max_hp
 
         events = database.get_active_system_events()
         active_boosts = [
@@ -426,9 +436,10 @@ class Hunting(commands.Cog):
         pedia.track_world_visit(user_id, world_data["id"])
 
         view = HuntSessionView(
-            self.bot, interaction.user, world_data, player_lvl, active_boosts
+            self.bot, interaction.user, world_data, player_lvl, active_boosts, context
         )
-        await interaction.response.send_message(
+
+        await interaction.followup.send(
             embed=view.create_embed("Press Start to begin hunting"), view=view
         )
 
@@ -440,6 +451,7 @@ class Hunting(commands.Cog):
         luck=0,
         user_id=None,
         active_players=1,
+        mission_state_dict=None,
     ):
         crate_chance = 0.05 + (luck / 200.0)
         if random.random() < crate_chance:
@@ -448,10 +460,9 @@ class Hunting(commands.Cog):
             return "mo.co Crate", unlock_lvl, False
         pool = game_data.get_monsters_for_world(world_id, world_type)
 
-        if user_id:
-            u = database.get_user_data(user_id)
+        if mission_state_dict:
             try:
-                m_state = json.loads(u["mission_state"])
+                m_state = mission_state_dict
                 for mid in m_state.get("active", []):
                     m_def = MISSIONS.get(mid)
                     step = m_def["steps"][m_state["states"][mid]["step"]]
@@ -497,14 +508,18 @@ class Hunting(commands.Cog):
         lvl = unlock_lvl + (12 if is_boss else 6)
         return monster_id, lvl, is_boss
 
-    def _roll_modifier(self, world_id, is_boss, user_id):
+    def _roll_modifier(self, world_id, is_boss, user_id, passives_cache=None):
         world_def = game_data.get_world(world_id)
         is_past_forest = world_def.get("unlock_lvl", 1) > 6
 
         if not is_past_forest:
             return "Standard"
 
-        passives = utils.get_active_passives(user_id)
+        passives = (
+            passives_cache
+            if passives_cache is not None
+            else utils.get_active_passives(user_id)
+        )
         amulet_lvl = passives.get("overcharged_amulet", 0)
         amulet_bonus = amulet_lvl / 100.0
 
@@ -538,6 +553,7 @@ class Hunting(commands.Cog):
         is_boss,
         world_id,
         modifier,
+        player_gp=None,
     ):
         if "Crate" in monster_id:
             return 0, 0, 0
@@ -563,12 +579,14 @@ class Hunting(commands.Cog):
         elif diff < -10:
             scale = 0.20
 
-        user_id = u_data["user_id"]
-
-        player_gp = utils.get_total_gp(u_data["user_id"])
+        gp_val = (
+            player_gp
+            if player_gp is not None
+            else utils.get_total_gp(u_data["user_id"])
+        )
         world_rgp = config.WORLD_RGP.get(world_id, 50)
 
-        gp_ratio = player_gp / max(1, world_rgp)
+        gp_ratio = gp_val / max(1, world_rgp)
 
         if gp_ratio > 5.0:
             scale *= 0.10
@@ -607,6 +625,7 @@ class Hunting(commands.Cog):
         monster_lvl,
         is_jackpot=False,
         world_id=None,
+        player_gp=None,
     ):
         if "Crate" in monster_id:
             return 0, 0
@@ -619,9 +638,13 @@ class Hunting(commands.Cog):
             loot_mult *= 0.5
 
         if world_id:
-            player_gp = utils.get_total_gp(u_data["user_id"])
+            gp_val = (
+                player_gp
+                if player_gp is not None
+                else utils.get_total_gp(u_data["user_id"])
+            )
             world_rgp = config.WORLD_RGP.get(world_id, 50)
-            gp_ratio = player_gp / max(1, world_rgp)
+            gp_ratio = gp_val / max(1, world_rgp)
             if gp_ratio > 5.0:
                 loot_mult *= 0.1
             elif gp_ratio > 3.0:
@@ -653,7 +676,7 @@ class Hunting(commands.Cog):
 
 class HuntSessionView(discord.ui.View):
 
-    def __init__(self, bot, user, world, start_lvl, active_boosts=[]):
+    def __init__(self, bot, user, world, start_lvl, active_boosts=[], context=None):
         super().__init__(timeout=600)
         self.bot, self.user, self.world, self.start_lvl, self.active_boosts = (
             bot,
@@ -682,64 +705,26 @@ class HuntSessionView(discord.ui.View):
         ) = (0, 0, 0, 0, [], 0, 8, 3, None)
         self.children[0].label = "Start"
         self.add_item(HuntLoadoutButton())
-        u_data = database.get_user_data(user.id)
-        u_dict = dict(u_data)
-        lvl, _, _ = utils.get_level_info(u_dict["xp"])
+
+        if context:
+            self.context = context
+        else:
+            self.context = utils.get_user_combat_profile(user.id)
+
+        self.local_hp = self.context["current_hp"]
+
+        u_dict = self.context["user_data"]
         is_elite = bool(u_dict.get("is_elite", 0))
         prestige = u_dict.get("prestige_level", 0)
-        emblem = utils.get_emblem(lvl, is_elite, prestige)
-
-        kit_data = {
-            "weapon": {
-                "id": "monster_slugger",
-                "modifier": "Standard",
-                "level": lvl,
-            },
-            "gadgets": [],
-            "passives": {},
-        }
-
-        with database.get_connection() as conn:
-            row = conn.execute(
-                "SELECT active_kit_index FROM users WHERE user_id=?",
-                (user.id,),
-            ).fetchone()
-            idx = row["active_kit_index"] if row else 1
-            kit = conn.execute(
-                "SELECT * FROM gear_kits WHERE user_id=? AND slot_index=?",
-                (user.id, idx),
-            ).fetchone()
-
-            if kit:
-                if kit["weapon_id"]:
-                    w = database.get_item_instance(kit["weapon_id"])
-                    if w:
-                        kit_data["weapon"] = {
-                            "id": w["item_id"],
-                            "modifier": w["modifier"],
-                            "level": w["level"],
-                        }
-                for i in range(1, 4):
-                    gid = kit[f"gadget_{i}_id"]
-                    if gid:
-                        g = database.get_item_instance(gid)
-                        if g:
-                            kit_data["gadgets"].append(
-                                {
-                                    "id": g["item_id"],
-                                    "lvl": g["level"],
-                                    "cd": 0,
-                                }
-                            )
-                for i in range(1, 4):
-                    pid = kit[f"passive_{i}_id"]
-                    if pid:
-                        p = database.get_item_instance(pid)
-                        if p:
-                            kit_data["passives"][p["item_id"]] = p["level"]
+        self.emblem = utils.get_emblem(self.context["level"], is_elite, prestige)
 
         WORLD_MGR.check_in(
-            world["id"], user.id, user.display_name, lvl, emblem, kit_data
+            world["id"],
+            user.id,
+            user.display_name,
+            self.context["level"],
+            self.emblem,
+            self.context["kit"],
         )
 
     async def on_timeout(self):
@@ -773,10 +758,20 @@ class HuntSessionView(discord.ui.View):
             if remaining <= 0:
                 break
             await asyncio.sleep(min(remaining, 1.0))
-        u_data = database.get_user_data(self.user_id)
-        pl, _, _ = utils.get_level_info(u_data["xp"] + self.session_xp)
-        max_hp = utils.get_max_hp(self.user_id, pl)
-        database.update_user_stats(self.user_id, {"current_hp": max_hp})
+
+        pl, _, _ = utils.get_level_info(
+            self.context["user_data"]["xp"] + self.session_xp
+        )
+        max_hp = utils.get_max_hp(
+            self.user_id, pl, self.context["kit"], self.context["inv_map"]
+        )
+
+        self.local_hp = max_hp
+        self.context["current_hp"] = max_hp
+        self.context["user_data"]["current_hp"] = max_hp
+
+        asyncio.create_task(self.save_hp_background(max_hp))
+
         self.respawn_ts, self.last_activity, self.is_processing = (
             None,
             "❤️ **Revived!** Ready to hunt.",
@@ -789,6 +784,9 @@ class HuntSessionView(discord.ui.View):
             await interaction.message.edit(embed=self.create_embed(), view=self)
         except:
             pass
+
+    async def save_hp_background(self, hp):
+        database.update_user_stats(self.user_id, {"current_hp": hp})
 
     def update_action_button(self):
         ws = WORLD_MGR.get_world(self.world["id"])
@@ -833,12 +831,15 @@ class HuntSessionView(discord.ui.View):
     def create_embed(self, status_msg=None):
         if status_msg:
             self.last_activity = status_msg
-        u_data = database.get_user_data(self.user_id)
-        u_dict = dict(u_data)
-        player_lvl, lvl_cost, current_xp = utils.get_level_info(u_dict["xp"])
+
+        u_dict = self.context["user_data"]
+
+        total_xp_now = u_dict["xp"] + self.session_xp
+        player_lvl, lvl_cost, current_xp = utils.get_level_info(total_xp_now)
+
         if player_lvl >= 50:
             elite_lvl, elite_cost, elite_curr = utils.get_elite_level_info(
-                u_dict["elite_xp"]
+                u_dict.get("elite_xp", 0)
             )
             lvl_display_str = f"Elite {elite_lvl}"
             prog_str = f"{config.ELITE_EMOJI} **{lvl_display_str}**: {elite_curr:,}/{elite_cost:,}"
@@ -846,19 +847,19 @@ class HuntSessionView(discord.ui.View):
             prog_str = (
                 f"{config.XP_EMOJI} Lvl {player_lvl}: {current_xp:,}/{lvl_cost:,}"
             )
-        max_hp = utils.get_max_hp(self.user_id, player_lvl)
-        player_gp = utils.get_total_gp(self.user_id)
+
+        max_hp = utils.get_max_hp(
+            self.user_id, player_lvl, self.context["kit"], self.context["inv_map"]
+        )
+        player_gp = self.context["gp"]
         rgp = config.WORLD_RGP.get(self.world["id"], 50)
         icon = config.WORLD_ICONS.get(self.world["type"], "🗺️")
         color = 0x3498DB if player_gp >= rgp else 0xE74C3C
-        if (
-            self.lives < 3
-            and u_data["current_hp"] <= 0
-            and self.lives > 0
-            and self.respawn_ts
-        ):
+
+        if self.lives < 3 and self.local_hp <= 0 and self.lives > 0 and self.respawn_ts:
             self.last_activity = f":skull: **Enemies got you!**\nReturning in <t:{int(self.respawn_ts.timestamp())}:R>"
             color = 0x2B2D31
+
         embed = discord.Embed(title=f"{icon} {self.world['name']}", color=color)
         embed.set_author(
             name=self.user.display_name, icon_url=self.user.display_avatar.url
@@ -1011,12 +1012,9 @@ class HuntSessionView(discord.ui.View):
                 final_text += f"\n*...and {len(objectives) - 5} more*"
             embed.add_field(name="Active Objectives", value=final_text, inline=False)
 
-        u_lvl, _, _ = utils.get_level_info(u_dict["xp"])
-        u_is_elite = bool(u_dict.get("is_elite"))
-        u_prestige = u_dict.get("prestige_level", 0)
-        u_emblem = utils.get_emblem(u_lvl, u_is_elite, u_prestige)
-
-        hunter_lines = [f"{u_emblem} **{self.user.display_name}** (Lvl {u_lvl})"]
+        hunter_lines = [
+            f"{self.emblem} **{self.user.display_name}** (Lvl {player_lvl})"
+        ]
 
         nearby = ws.get_nearby_allies(exlcude_id=self.user_id, count=3)
 
@@ -1074,14 +1072,32 @@ class HuntSessionView(discord.ui.View):
         gp_status = f"{config.GEAR_POWER_EMOJI} **Gear Power:** {player_gp:,}/{rgp:,}"
         embed.add_field(
             name="Status",
-            value=f"❤️ **HP:** {int(u_data['current_hp'])} / {max_hp} ({self.lives}/3)\n{gp_status}",
+            value=f"❤️ **HP:** {int(self.local_hp)} / {max_hp} ({self.lives}/3)\n{gp_status}",
             inline=False,
         )
 
-        xp_icon, xp_label, is_boosted, xp_curr, xp_cap = utils.get_xp_display_info(
-            u_dict
+        bank = u_dict["daily_xp_total"]
+        fuel = u_dict["daily_xp_boosted"]
+
+        xp_icon = config.XP_EMOJI
+        xp_label = "Normal XP"
+        if player_lvl < 10:
+            xp_icon = config.XP_EMOJI
+        elif fuel > 0:
+            xp_icon = config.XP_BOOST_3X_EMOJI
+            xp_label = "Boosted XP"
+        elif bank > 0:
+            xp_icon = config.XP_EMOJI
+        else:
+            xp_icon = config.NO_XP_EMOJI
+            xp_label = "No Battle XP"
+
+        xp_cap = config.XP_BOOST_BANK_CAP if fuel > 0 else config.XP_BANK_CAP
+        xp_curr_bank = fuel if fuel > 0 else bank
+
+        display_prog = (
+            f"{prog_str}\n{xp_icon} **{xp_label}:** {xp_curr_bank:,}/{xp_cap:,}"
         )
-        display_prog = f"{prog_str}\n{xp_icon} **{xp_label}:** {xp_curr:,}/{xp_cap:,}"
         embed.add_field(name="Session Stats", value=display_prog, inline=True)
 
         loot_display = f"{config.XP_EMOJI} **{self.session_xp:,}** XP\n{config.CHAOS_CORE_EMOJI} {self.session_cores}"
@@ -1102,82 +1118,37 @@ class HuntSessionView(discord.ui.View):
         if interaction.user.id != self.user_id or self.is_processing:
             return
         self.is_processing = True
-        ws = WORLD_MGR.get_world(self.world["id"])
-        u_data = database.get_user_data(self.user_id)
-        u_dict = dict(u_data)
 
-        lvl, _, _ = utils.get_level_info(u_dict["xp"])
-        is_elite = bool(u_dict.get("is_elite"))
-        prestige = u_dict.get("prestige_level", 0)
-        emblem = utils.get_emblem(lvl, is_elite, prestige)
-        passives = utils.get_active_passives(self.user_id)
+        button.disabled, button.label = True, "Hunting..."
+        await interaction.response.edit_message(view=self)
+
+        ws = WORLD_MGR.get_world(self.world["id"])
+
+        u_dict = self.context["user_data"]
+        lvl = self.context["level"]
+        kit_data = self.context["kit"]
+        passives = kit_data["passives"]
         luck_val = (
             scaling.get_passive_value("bunch_of_dice", passives.get("bunch_of_dice", 0))
             if "bunch_of_dice" in passives
             else 0
         )
 
-        kit_data = {
-            "weapon": {
-                "id": "monster_slugger",
-                "modifier": "Standard",
-                "level": lvl,
-            },
-            "gadgets": [],
-            "passives": {},
-        }
-        with database.get_connection() as conn:
-            row = conn.execute(
-                "SELECT active_kit_index FROM users WHERE user_id=?",
-                (self.user_id,),
-            ).fetchone()
-            idx = row["active_kit_index"] if row else 1
-            kit = conn.execute(
-                "SELECT * FROM gear_kits WHERE user_id=? AND slot_index=?",
-                (self.user_id, idx),
-            ).fetchone()
-            if kit:
-                if kit["weapon_id"]:
-                    w = database.get_item_instance(kit["weapon_id"])
-                    if w:
-                        kit_data["weapon"] = {
-                            "id": w["item_id"],
-                            "modifier": w["modifier"],
-                            "level": w["level"],
-                        }
-                for i in range(1, 4):
-                    gid = kit[f"gadget_{i}_id"]
-                    if gid:
-                        g = database.get_item_instance(gid)
-                        if g:
-                            kit_data["gadgets"].append(
-                                {
-                                    "id": g["item_id"],
-                                    "lvl": g["level"],
-                                    "cd": 0,
-                                }
-                            )
-                for i in range(1, 4):
-                    pid = kit[f"passive_{i}_id"]
-                    if pid:
-                        p = database.get_item_instance(pid)
-                        if p:
-                            kit_data["passives"][p["item_id"]] = p["level"]
-
         WORLD_MGR.check_in(
             self.world["id"],
             self.user_id,
             self.user.display_name,
             lvl,
-            emblem,
+            self.emblem,
             kit_data,
         )
 
         npc_status = ws.tick_npc()
         if npc_status == "DEPARTED" and ws.npc:
-            database.update_user_stats(
-                self.user_id, {"chaos_cores": u_dict["chaos_cores"] + 2}
-            )
+
+            self.context["user_data"]["chaos_cores"] += 2
+            asyncio.create_task(self.background_save_loot(cores=2))
+
             self.session_cores += 2
             self.full_logs.append(f"🎁 **{ws.npc['name']}** left a gift! (+2 Cores)")
             ws.npc = None
@@ -1191,75 +1162,40 @@ class HuntSessionView(discord.ui.View):
             if datetime.now() < self.respawn_ts:
                 self.is_processing = False
                 rem = int((self.respawn_ts - datetime.now()).total_seconds())
-                return await interaction.response.send_message(
-                    f"Wait {rem} seconds!", ephemeral=True
-                )
-            else:
-                pl, _, _ = utils.get_level_info(u_dict["xp"] + self.session_xp)
-                max_hp = utils.get_max_hp(self.user_id, pl)
-                database.update_user_stats(self.user_id, {"current_hp": max_hp})
-                self.respawn_ts = None
 
-        button.disabled, button.label = True, "Hunting..."
-        await interaction.response.edit_message(view=self)
-        utils.check_daily_reset(self.user_id)
-        u_data = database.get_user_data(self.user_id)
-        u_dict = dict(u_data)
+                return
+            else:
+
+                self.respawn_ts = None
 
         if not self.started:
             self.started = True
-        pedia.track_world_hunt(self.user_id, self.world["id"])
-        player_lvl, _, _ = utils.get_level_info(u_dict["xp"] + self.session_xp)
-        player_gp = utils.get_total_gp(self.user_id)
 
-        max_hp = utils.get_max_hp(self.user_id, player_lvl)
+        asyncio.create_task(self.background_pedia_track(self.world["id"]))
+
+        player_lvl = self.context["level"]
+
+        current_total_xp = u_dict["xp"] + self.session_xp
+        player_lvl, _, _ = utils.get_level_info(current_total_xp)
+
+        player_gp = self.context["gp"]
+        max_hp = utils.get_max_hp(
+            self.user_id, player_lvl, kit_data, self.context["inv_map"]
+        )
+        rgp = config.WORLD_RGP.get(self.world["id"], 50)
 
         if ws.boss and ws.boss["hp"] > 0 and self.selected_target == "boss":
+
             engine = CombatEngine(self.bot, gamemode="hunt", mode="sim")
             player = CombatEntity(engine, self.user.display_name, is_player=True)
-            player.user_id, player.icon = self.user_id, emblem
+            player.user_id, player.icon = self.user_id, self.emblem
 
-            weapon_data = {
-                "id": "monster_slugger",
-                "modifier": "Standard",
-                "level": 1,
-            }
-            gadgets = []
-            with database.get_connection() as conn:
-                u = conn.execute(
-                    "SELECT active_kit_index FROM users WHERE user_id=?",
-                    (self.user_id,),
-                ).fetchone()
-                idx = u["active_kit_index"] if u else 1
-                kit = conn.execute(
-                    "SELECT * FROM gear_kits WHERE user_id=? AND slot_index=?",
-                    (self.user_id, idx),
-                ).fetchone()
-                if kit:
-                    if kit["weapon_id"]:
-                        w = database.get_item_instance(kit["weapon_id"])
-                        if w:
-                            weapon_data = {
-                                "id": w["item_id"],
-                                "modifier": w["modifier"],
-                                "level": w["level"],
-                            }
-                    for i in range(1, 4):
-                        inst_id = kit[f"gadget_{i}_id"]
-                        if inst_id:
-                            g = database.get_item_instance(inst_id)
-                            if g:
-                                gadgets.append(
-                                    {
-                                        "id": g["item_id"],
-                                        "lvl": g["level"],
-                                        "cd": 0,
-                                    }
-                                )
+            weapon_data = kit_data["weapon"]
+            gadgets = kit_data["gadgets"]
 
             player.setup_stats(
                 player_lvl,
-                hp=u_dict["current_hp"],
+                hp=self.local_hp,
                 weapon=weapon_data,
                 gadgets=gadgets,
                 passives=passives,
@@ -1295,127 +1231,29 @@ class HuntSessionView(discord.ui.View):
                 player.max_hp - player.hp,
             )
             is_dead = ws.damage_boss(dmg_dealt, self.user_id)
-            new_hp = max(0, int(u_dict["current_hp"] - hp_loss))
-            database.update_user_stats(self.user_id, {"current_hp": new_hp})
+            new_hp = max(0, int(self.local_hp - hp_loss))
+
+            self.local_hp = new_hp
+            self.context["user_data"]["current_hp"] = new_hp
+            asyncio.create_task(self.save_hp_background(new_hp))
 
             self.last_activity = (
                 f"💥 **Skirmish with {ws.boss['name']}!** (-{dmg_dealt:,} Boss HP)"
             )
             self.full_logs = engine.logs + [self.last_activity]
-            self.bot.get_cog("Hunting").update_progression(
-                self.user_id,
-                monster_id=ws.boss["name"],
-                world_id=self.world["id"],
-                modifier="Shared",
-                monster_type="Boss",
-                damage_sources=player.damage_sources,
-                heal_sources=player.heal_sources,
-                is_shared_boss=True,
+
+            asyncio.create_task(
+                self.background_progression_update(
+                    monster_id=ws.boss["name"],
+                    modifier="Shared",
+                    monster_type="Boss",
+                    damage_sources=player.damage_sources,
+                    heal_sources=player.heal_sources,
+                    is_shared_boss=True,
+                )
             )
 
             if is_dead:
-                tier = ws.boss.get("tier", "T2")
-
-                xp_base = 15000
-                shards = 15
-                mvp_cores = 2
-                mvp_tokens = 25
-                mvp_gold = 2
-                last_hit_xp = 5000
-
-                if tier == "T1":
-                    (
-                        xp_base,
-                        shards,
-                        mvp_cores,
-                        mvp_tokens,
-                        mvp_gold,
-                        last_hit_xp,
-                    ) = (
-                        5000,
-                        5,
-                        1,
-                        10,
-                        0,
-                        2500,
-                    )
-                elif tier == "T3":
-                    (
-                        xp_base,
-                        shards,
-                        mvp_cores,
-                        mvp_tokens,
-                        mvp_gold,
-                        last_hit_xp,
-                    ) = (
-                        40000,
-                        30,
-                        3,
-                        50,
-                        10,
-                        10000,
-                    )
-                elif tier == "T4":
-                    (
-                        xp_base,
-                        shards,
-                        mvp_cores,
-                        mvp_tokens,
-                        mvp_gold,
-                        last_hit_xp,
-                    ) = (
-                        100000,
-                        60,
-                        5,
-                        100,
-                        25,
-                        25000,
-                    )
-
-                total_hp = ws.boss["max_hp"]
-                for uid, dmg in ws.boss["participants"].items():
-                    if dmg < (total_hp * 0.01):
-                        continue
-                    u_rec = database.get_user_data(uid)
-                    if u_rec:
-                        database.update_user_stats(
-                            uid,
-                            {
-                                "xp": u_rec["xp"] + xp_base,
-                                "chaos_shards": u_rec["chaos_shards"] + shards,
-                            },
-                        )
-
-                sorted_p = sorted(
-                    ws.boss["participants"].items(),
-                    key=lambda x: x[1],
-                    reverse=True,
-                )
-                mvp_id = sorted_p[0][0]
-                mvp_rec = database.get_user_data(mvp_id)
-                if mvp_rec:
-                    database.update_user_stats(
-                        mvp_id,
-                        {
-                            "chaos_cores": mvp_rec["chaos_cores"] + mvp_cores,
-                            "merch_tokens": mvp_rec["merch_tokens"] + mvp_tokens,
-                            "mo_gold": mvp_rec["mo_gold"] + mvp_gold,
-                        },
-                    )
-
-                if self.user_id in ws.boss["participants"]:
-                    self.session_xp += xp_base
-                    self.session_shards += shards
-
-                if self.user_id == mvp_id:
-                    self.session_cores += mvp_cores
-
-                if self.user_id == interaction.user.id:
-                    self.session_xp += last_hit_xp
-                    u_now = database.get_user_data(self.user_id)
-                    database.update_user_stats(
-                        self.user_id, {"xp": u_now["xp"] + last_hit_xp}
-                    )
 
                 self.full_logs.append(
                     f"🏆 **{ws.boss['name']} DEFEATED!** Participation loot granted."
@@ -1423,8 +1261,8 @@ class HuntSessionView(discord.ui.View):
                 ws.boss = None
             else:
                 xp_gain = 500
-                utils.add_user_xp(self.user_id, xp_gain)
                 self.session_xp += xp_gain
+                asyncio.create_task(self.background_save_loot(xp=xp_gain))
 
             if new_hp <= 0:
                 self.lives -= 1
@@ -1438,9 +1276,8 @@ class HuntSessionView(discord.ui.View):
                         "Respawning...",
                         discord.ButtonStyle.secondary,
                     )
-                    boss_display_name = ws.boss["name"] if (ws and ws.boss) else "Boss"
                     self.full_logs = engine.logs + [
-                        f"💀 **{boss_display_name}** defeated you!",
+                        f"💀 **{ws.boss['name'] if ws.boss else 'Boss'}** defeated you!",
                         self.last_activity,
                     ]
                     asyncio.create_task(self.handle_respawn(interaction))
@@ -1448,12 +1285,6 @@ class HuntSessionView(discord.ui.View):
                     self.last_activity = "💀 **Hunt Failed! Portal Collapsed.**"
                     self.full_logs = engine.logs + [self.last_activity]
                     button.disabled, button.label = True, "Game Over"
-                    for child in self.children:
-                        if (
-                            isinstance(child, discord.ui.Button)
-                            and child.label == "Return Home"
-                        ):
-                            child.style = discord.ButtonStyle.primary
                     self.is_processing = False
             else:
                 self.is_processing, button.disabled = False, False
@@ -1464,19 +1295,14 @@ class HuntSessionView(discord.ui.View):
                 view=self,
             )
 
-        weapon_data = {
-            "id": "monster_slugger",
-            "modifier": "Standard",
-            "level": 1,
-        }
-        gadgets = []
-        if kit_data.get("weapon"):
-            weapon_data = kit_data["weapon"]
-        if kit_data.get("gadgets"):
-            gadgets = kit_data["gadgets"]
-
         cog = self.bot.get_cog("Hunting")
         active_count = len(ws.hunters) + len(ws.ghosts) + len(ws.bots)
+
+        try:
+            m_state = json.loads(u_dict["mission_state"])
+        except:
+            m_state = {}
+
         monster_id, monster_lvl, is_boss = cog._spawn_monster(
             self.world["id"],
             self.world["type"],
@@ -1484,8 +1310,11 @@ class HuntSessionView(discord.ui.View):
             luck=luck_val,
             user_id=self.user_id,
             active_players=active_count,
+            mission_state_dict=m_state,
         )
-        modifier = cog._roll_modifier(self.world["id"], is_boss, self.user_id)
+        modifier = cog._roll_modifier(
+            self.world["id"], is_boss, self.user_id, passives_cache=passives
+        )
 
         xp_lvl = monster_lvl
         if modifier == "Overcharged":
@@ -1493,7 +1322,6 @@ class HuntSessionView(discord.ui.View):
         elif modifier == "Megacharged":
             xp_lvl += 25
 
-        rgp = config.WORLD_RGP.get(self.world["id"], 50)
         base_icon = config.MOBS.get(monster_id, utils.get_emoji(self.bot, monster_id))
         mod_icons, display_name = cog.format_modifier_display(modifier, monster_id)
         m_icon = f"{mod_icons} {base_icon}".strip()
@@ -1532,9 +1360,10 @@ class HuntSessionView(discord.ui.View):
                 )
 
         if "mo.co Crate" in monster_id:
-            database.update_user_stats(
-                self.user_id, {"merch_tokens": u_dict["merch_tokens"] + 10}
-            )
+
+            self.context["user_data"]["merch_tokens"] += 10
+            asyncio.create_task(self.background_save_loot(tokens=10))
+
             self.session_tokens += 10
             self.last_activity = (
                 f"{config.MOCO_CRATE_EMOJI} **mo.co Crate Found! +10 Tokens**"
@@ -1550,12 +1379,13 @@ class HuntSessionView(discord.ui.View):
 
         engine = CombatEngine(self.bot, gamemode="hunt", mode="sim")
         player = CombatEntity(engine, self.user.display_name, is_player=True)
-        player.user_id, player.icon = self.user_id, emblem
+        player.user_id, player.icon = self.user_id, self.emblem
+
         player.setup_stats(
             player_lvl,
-            hp=u_dict["current_hp"],
-            weapon=weapon_data,
-            gadgets=gadgets,
+            hp=self.local_hp,
+            weapon=kit_data["weapon"],
+            gadgets=kit_data["gadgets"],
             passives=passives,
         )
 
@@ -1574,28 +1404,15 @@ class HuntSessionView(discord.ui.View):
                 clone = CombatEntity(engine, ally["name"], is_player=True, is_bot=True)
                 clone.icon = ally.get("emblem", "👤")
 
-                w_data = {
-                    "id": "monster_slugger",
-                    "modifier": "Standard",
-                    "level": ally["lvl"],
-                }
-                g_data = []
-                p_data = {}
-
-                if "kit" in ally:
-                    k = ally["kit"]
-                    if k.get("weapon"):
-                        w_data = k["weapon"]
-                    if k.get("gadgets"):
-                        g_data = k["gadgets"]
-                    if k.get("passives"):
-                        p_data = k["passives"]
-
                 clone.setup_stats(
-                    ally["lvl"], weapon=w_data, gadgets=g_data, passives=p_data
+                    ally["lvl"],
+                    weapon={
+                        "id": "monster_slugger",
+                        "modifier": "Standard",
+                        "level": ally["lvl"],
+                    },
                 )
                 engine.add_entity(clone, "A")
-
             elif ally["type"] == "npc":
                 npc_ally_name = ally["name"]
                 if random.random() < 0.2:
@@ -1605,15 +1422,14 @@ class HuntSessionView(discord.ui.View):
                 )
                 npc.icon = NPC_CONFIG[ally["name"]]["emoji"]
                 npc.setup_stats(
-                    50,
-                    hp=ally["hp"],
-                    weapon={"id": ally["weapon"], "level": 50},
+                    50, hp=ally["hp"], weapon={"id": ally["weapon"], "level": 50}
                 )
                 engine.add_entity(npc, "A")
 
         mob = CombatEntity(engine, display_name, is_player=False, source_id=monster_id)
         mob.icon = m_icon
-        mob.icon, starting_hp = m_icon, int(u_dict["current_hp"])
+        starting_hp = int(self.local_hp)
+
         combat_atk_mult, combat_hp_mult = 1.0, 1.0
         mob.apply_modifier(modifier)
 
@@ -1652,17 +1468,22 @@ class HuntSessionView(discord.ui.View):
 
         if real_current_hp <= 0:
             self.lives -= 1
-            database.update_user_stats(self.user_id, {"current_hp": 0})
-            cog.update_progression(
-                self.user_id,
-                monster_id,
-                self.world["id"],
-                modifier,
-                "Boss" if is_boss else "Normal",
-                damage_sources=player.damage_sources,
-                heal_sources=player.heal_sources,
-                npc_ally=npc_ally_name,
+            self.local_hp = 0
+            self.context["user_data"]["current_hp"] = 0
+            asyncio.create_task(self.save_hp_background(0))
+
+            asyncio.create_task(
+                self.background_progression_update(
+                    monster_id,
+                    self.world["id"],
+                    modifier,
+                    "Boss" if is_boss else "Normal",
+                    damage_sources=player.damage_sources,
+                    heal_sources=player.heal_sources,
+                    npc_ally=npc_ally_name,
+                )
             )
+
             if self.lives > 0:
                 self.respawn_ts, self.last_activity = (
                     datetime.now() + timedelta(seconds=10),
@@ -1689,10 +1510,12 @@ class HuntSessionView(discord.ui.View):
                     ):
                         child.style = discord.ButtonStyle.primary
                 self.is_processing = False
+
             self.log_page = 0
             if not any(isinstance(x, LogUpButton) for x in self.children):
                 self.add_item(LogUpButton())
                 self.add_item(LogDownButton())
+
             return await interaction.followup.edit_message(
                 message_id=interaction.message.id,
                 embed=self.create_embed(),
@@ -1722,6 +1545,7 @@ class HuntSessionView(discord.ui.View):
             is_boss,
             self.world["id"],
             modifier,
+            player_gp=player_gp,
         )
 
         shards, cores = cog._generate_loot(
@@ -1733,38 +1557,47 @@ class HuntSessionView(discord.ui.View):
             xp_lvl,
             is_jackpot=is_jackpot,
             world_id=self.world["id"],
+            player_gp=player_gp,
         )
 
         if fuel_consumed > 0:
             shards, cores = int(shards * 1.5), int(cores * 1.5)
 
-        utils.add_user_xp(self.user_id, xp_gain)
         self.session_xp += xp_gain
         self.session_shards += shards
         self.session_cores += cores
 
-        final_hp = min(int(max(0, real_current_hp)), max_hp)
+        u_dict["chaos_shards"] += shards
+        u_dict["chaos_cores"] += cores
+        u_dict["daily_xp_total"] = max(0, u_dict["daily_xp_total"] - bank_consumed)
+        u_dict["daily_xp_boosted"] = max(0, u_dict["daily_xp_boosted"] - fuel_consumed)
 
-        database.update_user_stats(
-            self.user_id,
-            {
-                "chaos_shards": u_dict["chaos_shards"] + shards,
-                "chaos_cores": u_dict["chaos_cores"] + cores,
-                "current_hp": final_hp,
-                "daily_xp_total": max(0, u_dict["daily_xp_total"] - bank_consumed),
-                "daily_xp_boosted": max(0, u_dict["daily_xp_boosted"] - fuel_consumed),
-            },
+        final_hp = min(int(max(0, real_current_hp)), max_hp)
+        self.local_hp = final_hp
+        u_dict["current_hp"] = final_hp
+
+        asyncio.create_task(
+            self.background_save_loot(
+                xp=xp_gain,
+                shards=shards,
+                cores=cores,
+                hp=final_hp,
+                bank_c=bank_consumed,
+                fuel_c=fuel_consumed,
+            )
         )
-        cog.update_progression(
-            self.user_id,
-            monster_id,
-            self.world["id"],
-            modifier,
-            "Boss" if is_boss else "Normal",
-            loot_xp=xp_gain,
-            damage_sources=player.damage_sources,
-            heal_sources=player.heal_sources,
-            npc_ally=npc_ally_name,
+
+        asyncio.create_task(
+            self.background_progression_update(
+                monster_id,
+                self.world["id"],
+                modifier,
+                "Boss" if is_boss else "Normal",
+                loot_xp=xp_gain,
+                damage_sources=player.damage_sources,
+                heal_sources=player.heal_sources,
+                npc_ally=npc_ally_name,
+            )
         )
 
         header_msg = (
@@ -1789,11 +1622,45 @@ class HuntSessionView(discord.ui.View):
         if not any(isinstance(x, LogUpButton) for x in self.children):
             self.add_item(LogUpButton())
             self.add_item(LogDownButton())
+
         await interaction.followup.edit_message(
             message_id=interaction.message.id,
             embed=self.create_embed(),
             view=self,
         )
+
+    async def background_save_loot(
+        self, xp=0, shards=0, cores=0, tokens=0, hp=None, bank_c=0, fuel_c=0
+    ):
+
+        updates = {}
+        if xp:
+            utils.add_user_xp(self.user_id, xp)
+
+        u_data = database.get_user_data(self.user_id)
+
+        if shards:
+            updates["chaos_shards"] = u_data["chaos_shards"] + shards
+        if cores:
+            updates["chaos_cores"] = u_data["chaos_cores"] + cores
+        if tokens:
+            updates["merch_tokens"] = u_data["merch_tokens"] + tokens
+        if hp is not None:
+            updates["current_hp"] = hp
+        if bank_c:
+            updates["daily_xp_total"] = max(0, u_data["daily_xp_total"] - bank_c)
+        if fuel_c:
+            updates["daily_xp_boosted"] = max(0, u_data["daily_xp_boosted"] - fuel_c)
+
+        if updates:
+            database.update_user_stats(self.user_id, updates)
+
+    async def background_pedia_track(self, world_id):
+        pedia.track_world_hunt(self.user_id, world_id)
+
+    async def background_progression_update(self, *args, **kwargs):
+        cog = self.bot.get_cog("Hunting")
+        cog.update_progression(self.user_id, *args, **kwargs)
 
     @discord.ui.button(
         label="Return Home",
@@ -1808,16 +1675,18 @@ class HuntSessionView(discord.ui.View):
             return
         self.is_processing = True
         WORLD_MGR.check_out(self.world["id"], self.user_id)
-        u_data = database.get_user_data(self.user_id)
-        player_lvl, _, _ = utils.get_level_info(u_data["xp"])
+
+        player_lvl, _, _ = utils.get_level_info(
+            self.context["user_data"]["xp"] + self.session_xp
+        )
+
         if self.lives > 0:
-            database.update_user_stats(
-                self.user_id,
-                {
-                    "current_hp": utils.get_max_hp(self.user_id, player_lvl),
-                    "weapon_combo_count": 0,
-                },
+
+            max_hp = utils.get_max_hp(
+                self.user_id, player_lvl, self.context["kit"], self.context["inv_map"]
             )
+            asyncio.create_task(self.background_save_loot(hp=max_hp))
+
             actual_shards = self.session_shards if player_lvl >= 12 else 0
             summary = HuntSummaryView(
                 self.bot,
@@ -1835,7 +1704,7 @@ class HuntSessionView(discord.ui.View):
                 embed=summary.get_embed(), view=summary
             )
         else:
-            database.update_user_stats(self.user_id, {"current_hp": 100})
+            asyncio.create_task(self.background_save_loot(hp=100))
             embed = discord.Embed(
                 title="💀 Hunt Failed",
                 description="You collapsed and were emergency teleported home.\n**All session loot was lost.**",

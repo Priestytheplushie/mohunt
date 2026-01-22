@@ -352,7 +352,6 @@ def register_user(user_id, display_name=None):
         ).fetchone()
 
         if row:
-
             if display_name and row["display_name"] != display_name:
                 conn.execute(
                     "UPDATE users SET display_name = ? WHERE user_id = ?",
@@ -392,8 +391,60 @@ def register_user(user_id, display_name=None):
         conn.commit()
 
 
+def get_full_user_context(user_id):
+    """
+    BULK FETCH: Retrives User Data, Active Kit, and ALL equipped item details in
+    minimal database round-trips (ideally 2). This solves the N+1 performance issue.
+    Returns: (user_dict, kit_dict, inventory_map)
+    inventory_map is dict: {instance_id: {item_row_dict}}
+    """
+    with get_connection() as conn:
+
+        user_row = conn.execute(
+            "SELECT * FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if not user_row:
+            return None, None, {}
+
+        user = dict(user_row)
+        idx = user.get("active_kit_index", 1)
+
+        kit_row = conn.execute(
+            "SELECT * FROM gear_kits WHERE user_id=? AND slot_index=?", (user_id, idx)
+        ).fetchone()
+
+        if not kit_row:
+
+            kit_row = conn.execute(
+                "SELECT * FROM gear_kits WHERE user_id=? ORDER BY slot_index ASC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+
+        if not kit_row:
+            return user, None, {}
+
+        kit = dict(kit_row)
+
+        instance_ids = []
+        for key, val in kit.items():
+            if key.endswith("_id") and val and isinstance(val, int):
+                instance_ids.append(val)
+
+        inv_map = {}
+        if instance_ids:
+
+            placeholders = ",".join("?" * len(instance_ids))
+            query = f"SELECT * FROM inventory WHERE instance_id IN ({placeholders})"
+            inv_rows = conn.execute(query, tuple(instance_ids)).fetchall()
+
+            for r in inv_rows:
+                d = dict(r)
+                inv_map[d["instance_id"]] = d
+
+        return user, kit, inv_map
+
+
 def load_global_cache():
-    """Fetches all configuration and blacklists for rapid access."""
     conn = get_connection()
     try:
         config_rows = conn.execute("SELECT key, value FROM system_config").fetchall()
@@ -431,7 +482,6 @@ def ensure_user_has_kit(user_id):
             "SELECT count(*) FROM gear_kits WHERE user_id=?", (user_id,)
         ).fetchone()[0]
         if kits == 0:
-
             old_loadout = conn.execute(
                 "SELECT * FROM loadouts WHERE user_id=?", (user_id,)
             ).fetchone()
