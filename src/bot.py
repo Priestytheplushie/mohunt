@@ -6,8 +6,6 @@ import sys
 import traceback
 from datetime import datetime
 
-from keep_alive import keep_alive
-
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from mo_co import config, database, season_manager, game_data
@@ -180,6 +178,5 @@ class MoCoBot(commands.Bot):
 
 
 if __name__ == "__main__":
-    keep_alive()
     bot = MoCoBot()
     bot.run(config.TOKEN)
