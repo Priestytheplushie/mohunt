@@ -209,7 +209,7 @@ class Admin(commands.Cog):
             )
 
         try:
-            import libsql_experimental as libsql              
+            import libsql_experimental as libsql #type: ignore          
         except ImportError:
             return await ctx.send(
                 "❌ `libsql-experimental` not installed. Cannot connect to Turso."

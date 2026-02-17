@@ -497,8 +497,6 @@ class BeltsButton(Button):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        from mo_co.cogs.hunting import BeltsView
-
         await interaction.response.send_message(
             embed=BeltsView(interaction.user.id).get_embed(), ephemeral=True
         )

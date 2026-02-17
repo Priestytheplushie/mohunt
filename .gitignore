@@ -220,3 +220,5 @@ moco_v2.db
 
 # Cleanup
 clean_project.py
+moco_v2.db-wal
+moco_v2.db-shm
