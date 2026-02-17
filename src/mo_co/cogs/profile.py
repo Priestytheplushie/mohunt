@@ -16,9 +16,6 @@ class Profile(commands.Cog):
         )
         self.bot.tree.add_command(self.ctx_menu)
 
-                                                                                                                   
-                                                      
-
     async def _generate_profile_embed(self, target: discord.User):
         row = database.get_user_data(target.id)
         if not row:
@@ -221,7 +218,7 @@ class Profile(commands.Cog):
         await interaction.response.defer()
         target = target or interaction.user
         database.register_user(target.id, target.display_name)
-        
+
         embed = await self._generate_profile_embed(target)
         if not embed:
             return await interaction.followup.send(
@@ -270,10 +267,10 @@ class Profile(commands.Cog):
 
     @app_commands.command(name="leaderboard", description="Global Hunter Rankings")
     async def leaderboard(self, interaction: discord.Interaction):
-                                                    
+
         await interaction.response.defer()
         view = LeaderboardView(self.bot, interaction.user.id)
-                                                                                 
+
         await interaction.followup.send(embed=view.get_embed(), view=view)
 
     @app_commands.command(name="title", description="Equip a Title")
@@ -389,9 +386,9 @@ class LeaderboardView(View):
         self.update_components()
 
     def _refresh_db_data(self):
-                                                                    
+
         raw_data = database.get_leaderboard_data(limit=100)
-        
+
         processed = []
         for u in raw_data:
             uid = u["user_id"]
@@ -411,9 +408,9 @@ class LeaderboardView(View):
                 lvl_disp = f"{lvl}"
 
             gp = utils.get_total_gp(uid)
-                                                      
+
             name = u["display_name"] or f"Hunter#{str(uid)[-4:]}"
-            
+
             processed.append(
                 {
                     "id": uid,
@@ -448,7 +445,9 @@ class LeaderboardView(View):
         lines = []
         for idx, item in enumerate(chunk):
             rank = self.offset + idx + 1
-            final_name = f"**{item['name']}**" if item["id"] == self.user_id else item["name"]
+            final_name = (
+                f"**{item['name']}**" if item["id"] == self.user_id else item["name"]
+            )
             lines.append(
                 f"`#{rank:02}` {item['emblem']} {final_name} | {config.GEAR_POWER_EMOJI} `{item['gp']:,}` | Lvl `{item['lvl']}`"
             )
@@ -535,7 +534,7 @@ class LeaderboardView(View):
         elif cid == "lb_reset":
             self.search_results, self.offset = None, 0
             self._refresh_db_data()
-        
+
         self.update_components()
         await interaction.edit_original_response(embed=self.get_embed(), view=self)
         return True
@@ -586,11 +585,7 @@ class LeaderboardSearchModal(Modal):
         q = self.query.value.lower()
         if not interaction.response.is_done():
             await interaction.response.defer()
-        results = [
-            row
-            for row in self.view.all_data
-            if q in row["name"].lower()
-        ]
+        results = [row for row in self.view.all_data if q in row["name"].lower()]
         self.view.search_results, self.view.offset = results, 0
         self.view.update_components()
         await interaction.edit_original_response(

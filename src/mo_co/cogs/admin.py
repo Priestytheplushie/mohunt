@@ -209,7 +209,7 @@ class Admin(commands.Cog):
             )
 
         try:
-            import libsql_experimental as libsql #type: ignore          
+            import libsql_experimental as libsql  # type: ignore
         except ImportError:
             return await ctx.send(
                 "❌ `libsql-experimental` not installed. Cannot connect to Turso."
@@ -623,10 +623,10 @@ class UnbanGuildButton(Button):
 
     async def callback(self, i: discord.Interaction):
         database.unblacklist_guild(self.guild_id)
-                                 
+
         if self.guild_id in self.view.bot.guild_blacklist_cache:
             del self.view.bot.guild_blacklist_cache[self.guild_id]
-            
+
         self.view.update_components()
         await i.response.edit_message(embed=self.view.get_embed(), view=self.view)
         await i.followup.send("✅ Guild unblacklisted.", ephemeral=True)
@@ -800,11 +800,11 @@ class GuildBlacklistModal(Modal):
                 "internal": self.staff_reason.value,
             },
         )
-                                  
+
         i.client.guild_blacklist_cache[self.guild_id] = {
             "guild_id": self.guild_id,
             "public_reason": self.pub_reason.value,
-            "staff_reason": self.staff_reason.value
+            "staff_reason": self.staff_reason.value,
         }
 
         self.parent_view.update_components()
@@ -2113,9 +2113,9 @@ class GlobalActionSelect(Select):
             current = database.get_config("maintenance_mode", "0")
             new_val = "1" if current == "0" else "0"
             database.set_config("maintenance_mode", new_val)
-                                                    
+
             self.view.bot.update_cache("maintenance_mode", new_val)
-            
+
             await i.response.send_message(
                 f"Maintenance Mode set to: {new_val}", ephemeral=True
             )
@@ -2163,10 +2163,10 @@ class ModerationActionSelect(Select):
             await i.response.send_message("✅ Dailies force-reset.", ephemeral=True)
         elif val == "unban":
             database.unblacklist_user(self.target_id)
-                                      
+
             if self.target_id in self.view.bot.blacklist_cache:
                 del self.view.bot.blacklist_cache[self.target_id]
-                
+
             await i.response.send_message("User unbanned.", ephemeral=True)
             self.view.update_components()
             await i.edit_original_response(embed=self.view.get_embed(), view=self.view)
@@ -2318,14 +2318,13 @@ class UserBlacklistReasonModal(Modal):
             "BAN_USER",
             {"expiry": self.expiry, "reason": self.reason.value},
         )
-        
-                                      
+
         i.client.blacklist_cache[self.target_id] = {
             "user_id": self.target_id,
             "reason": self.reason.value,
-            "expires_at": self.expiry
+            "expires_at": self.expiry,
         }
-        
+
         await i.response.send_message(
             f"⛔ **User Blacklisted.**\nExpires: {self.expiry}", ephemeral=True
         )
